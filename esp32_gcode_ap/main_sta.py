@@ -263,7 +263,7 @@ async def client_handler(reader, writer):
         elif method == "POST" and path == "/api/start":
             if not PARSER_READY:
                 await send_response(writer, json_response("409 Conflict", {"error": "parser_not_connected"}))
-            elif job_state not in ("ready", "stopped", "completed"):
+            elif job_state not in ("ready", "stopped", "completed", "limit"):
                 await send_response(writer, json_response("409 Conflict", {"error": "job_not_ready"}))
             else:
                 last_error = ""
@@ -371,6 +371,8 @@ async def main():
     global server
     while not await connect_station():
         await asyncio.sleep_ms(3000)
+    if PARSER_READY:
+        print("Limit inputs:", gcode_controller.get_limit_status())
     server = await asyncio.start_server(client_handler, "0.0.0.0", 80)
     print("HTTP server ready")
     asyncio.create_task(wifi_monitor())

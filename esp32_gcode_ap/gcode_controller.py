@@ -39,9 +39,10 @@ PULSE_YIELD_INTERVAL = 0
 STEP_HIGH_US = 10
 ARC_SEGMENT_MM = 0.5
 
-# SN04-N is an NPN sensor. The optocoupler board is expected to pull its
-# ESP32-side output low when a limit is active.
-LIMIT_ACTIVE_LEVEL = 0
+# The installed optocoupler board reports idle as low and a triggered sensor
+# as high on the ESP32 side. Keep the input low while the board is disconnected.
+LIMIT_PULL = Pin.PULL_DOWN
+LIMIT_ACTIVE_LEVEL = 1
 
 X_STEP_MASK = 1
 Y_STEP_MASK = 2
@@ -63,14 +64,14 @@ z_step = Pin(13, Pin.OUT, value=0)
 z_dir = Pin(14, Pin.OUT, value=0)
 z_ena = Pin(15, Pin.OUT, value=ENA_OFF)
 
-x_minus_limit = Pin(16, Pin.IN, Pin.PULL_UP)
-x_plus_limit = Pin(17, Pin.IN, Pin.PULL_UP)
-y_left_minus_limit = Pin(18, Pin.IN, Pin.PULL_UP)
-y_left_plus_limit = Pin(21, Pin.IN, Pin.PULL_UP)
-y_right_minus_limit = Pin(38, Pin.IN, Pin.PULL_UP)
-y_right_plus_limit = Pin(39, Pin.IN, Pin.PULL_UP)
-z_minus_limit = Pin(40, Pin.IN, Pin.PULL_UP)
-z_plus_limit = Pin(41, Pin.IN, Pin.PULL_UP)
+x_minus_limit = Pin(16, Pin.IN, LIMIT_PULL)
+x_plus_limit = Pin(17, Pin.IN, LIMIT_PULL)
+y_left_minus_limit = Pin(18, Pin.IN, LIMIT_PULL)
+y_left_plus_limit = Pin(21, Pin.IN, LIMIT_PULL)
+y_right_minus_limit = Pin(38, Pin.IN, LIMIT_PULL)
+y_right_plus_limit = Pin(39, Pin.IN, LIMIT_PULL)
+z_minus_limit = Pin(40, Pin.IN, LIMIT_PULL)
+z_plus_limit = Pin(41, Pin.IN, LIMIT_PULL)
 
 STEP_PINS = {
     "X": (x_step,),
