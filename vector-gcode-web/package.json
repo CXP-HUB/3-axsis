@@ -1,0 +1,11 @@
+{
+  "name": "vector-gcode-web-component",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Embeddable DXF/SVG to millimeter G-code Web Component with Z-only tool changes.",
+  "scripts": {
+    "start": "node server.mjs",
+    "check": "node --check vector-gcode-core.js && node --check vector-gcode-editor.js"
+  }
+}

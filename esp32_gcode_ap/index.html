@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>G-code 控制台</title>
+  <style>
+    :root { color-scheme: light; font-family: system-ui, sans-serif; }
+    body { max-width: 560px; margin: 0 auto; padding: 24px 16px; color: #17202a; }
+    h1 { font-size: 24px; margin: 0 0 20px; }
+    section { border: 1px solid #d8dee4; padding: 16px; margin: 12px 0; }
+    button, input { font: inherit; }
+    button { min-height: 42px; padding: 8px 14px; margin: 6px 4px 0 0; cursor: pointer; }
+    progress { width: 100%; height: 20px; }
+    #message { min-height: 24px; color: #4b5563; }
+    .danger { color: #b42318; }
+    dl { display: grid; grid-template-columns: 130px 1fr; gap: 8px; }
+    dt { color: #667085; }
+    dd { margin: 0; word-break: break-word; }
+  </style>
+</head>
+<body>
+  <h1>G-code 控制台</h1>
+
+  <section>
+    <input id="file" type="file" accept=".gcode,.nc,.txt">
+    <button id="upload" type="button">上传文件</button>
+    <progress id="progress" max="100" value="0"></progress>
+  </section>
+
+  <section>
+    <dl>
+      <dt>状态</dt><dd id="state">读取中</dd>
+      <dt>文件</dt><dd id="name">-</dd>
+      <dt>大小</dt><dd id="size">-</dd>
+      <dt>解析器</dt><dd id="parser">-</dd>
+      <dt>错误</dt><dd id="error" class="danger">-</dd>
+    </dl>
+    <button id="start" type="button">开始</button>
+    <button id="pause" type="button">暂停</button>
+    <button id="resume" type="button">继续</button>
+    <button id="stop" type="button">停止</button>
+  </section>
+
+  <p id="message" role="status"></p>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+
+    function showStatus(data) {
+      $("state").textContent = data.state || "-";
+      $("name").textContent = data.name || "-";
+      $("size").textContent = data.size ? `${data.size} bytes` : "-";
+      $("parser").textContent = data.parser_ready ? "已连接" : (data.parser_error || "待接入");
+      $("error").textContent = data.error || "-";
+      $("progress").value = data.upload_percent || 0;
+    }
+
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || response.statusText);
+      return data;
+    }
+
+    $("upload").onclick = async () => {
+      const file = $("file").files[0];
+      if (!file) {
+        $("message").textContent = "请先选择 G-code 文件";
+        return;
+      }
+      $("message").textContent = "正在上传...";
+      $("progress").value = 0;
+      try {
+        const data = await request("/api/job", {
+          method: "PUT",
+          headers: { "Content-Type": "application/octet-stream", "X-File-Name": file.name },
+          body: file
+        });
+        showStatus(data);
+        $("message").textContent = "上传完成，可以开始执行";
+      } catch (error) {
+        $("message").textContent = `上传失败：${error.message}`;
+      }
+    };
+
+    const actions = ["start", "pause", "resume", "stop"];
+    actions.forEach((action) => {
+      $(action).onclick = async () => {
+        try {
+          const data = await request(`/api/${action}`, { method: "POST" });
+          showStatus(data);
+          $("message").textContent = `${action} 请求已发送`;
+        } catch (error) {
+          $("message").textContent = `操作失败：${error.message}`;
+        }
+      };
+    });
+
+    async function refresh() {
+      try { showStatus(await request("/api/status")); }
+      catch (error) { $("message").textContent = `设备连接失败：${error.message}`; }
+    }
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>
