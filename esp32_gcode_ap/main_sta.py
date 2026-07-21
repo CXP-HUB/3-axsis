@@ -229,12 +229,17 @@ async def run_job():
         job_state = "limit"
         last_error = str(error)
     except gcode_controller.MotionStopped:
-        job_state = "stopped"
+        limit_name = gcode_controller.get_limit_stop_name() or gcode_controller.active_limit_name()
+        if gcode_controller.limit_stop_requested() or limit_name is not None:
+            job_state = "limit"
+            last_error = "limit_triggered_{}".format(limit_name)
+        else:
+            job_state = "stopped"
     except Exception as error:
         job_state = "error"
         last_error = str(error)
     finally:
-        gcode_controller.stop_axes()
+        gcode_controller.stop_axes(disable_all=job_state == "limit")
 
 
 async def client_handler(reader, writer):

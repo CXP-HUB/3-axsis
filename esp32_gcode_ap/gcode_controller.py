@@ -124,6 +124,8 @@ UNITS = "mm"
 ABSOLUTE_MODE = True
 STOP_REQUESTED = False
 PAUSE_REQUESTED = False
+LIMIT_STOP_REQUESTED = False
+LIMIT_STOP_NAME = ""
 
 
 class MotionStopped(Exception):
@@ -137,9 +139,11 @@ class LimitTriggered(MotionStopped):
 
 
 def clear_motion_requests():
-    global STOP_REQUESTED, PAUSE_REQUESTED
+    global STOP_REQUESTED, PAUSE_REQUESTED, LIMIT_STOP_REQUESTED, LIMIT_STOP_NAME
     STOP_REQUESTED = False
     PAUSE_REQUESTED = False
+    LIMIT_STOP_REQUESTED = False
+    LIMIT_STOP_NAME = ""
 
 
 def request_stop():
@@ -177,26 +181,42 @@ def get_limit_status():
     }
 
 
-def check_motion_limits(deltas):
-    # This function runs while the pulse loop has GC disabled. Avoid tuples,
-    # generators, and dictionary construction here or long moves can exhaust
-    # the MicroPython heap with unreachable temporary objects.
-    if deltas["X"] < 0 and is_limit_active(x_minus_limit):
-        raise LimitTriggered("X-")
-    if deltas["X"] > 0 and is_limit_active(x_plus_limit):
-        raise LimitTriggered("X+")
+def limit_stop_requested():
+    return LIMIT_STOP_REQUESTED
 
-    if deltas["Y"] < 0:
-        if is_limit_active(y_left_minus_limit) or is_limit_active(y_right_minus_limit):
-            raise LimitTriggered("Y-")
-    if deltas["Y"] > 0:
-        if is_limit_active(y_left_plus_limit) or is_limit_active(y_right_plus_limit):
-            raise LimitTriggered("Y+")
 
-    if deltas["Z"] < 0 and is_limit_active(z_minus_limit):
-        raise LimitTriggered("Z-")
-    if deltas["Z"] > 0 and is_limit_active(z_plus_limit):
-        raise LimitTriggered("Z+")
+def get_limit_stop_name():
+    return LIMIT_STOP_NAME
+
+
+def active_limit_name():
+    # Keep this polling path allocation-free because it runs with GC disabled.
+    if is_limit_active(x_minus_limit):
+        return "X-"
+    if is_limit_active(x_plus_limit):
+        return "X+"
+    if is_limit_active(y_left_minus_limit):
+        return "Y-left-"
+    if is_limit_active(y_left_plus_limit):
+        return "Y-left+"
+    if is_limit_active(y_right_minus_limit):
+        return "Y-right-"
+    if is_limit_active(y_right_plus_limit):
+        return "Y-right+"
+    if is_limit_active(z_minus_limit):
+        return "Z-"
+    if is_limit_active(z_plus_limit):
+        return "Z+"
+    return None
+
+
+def check_motion_limits(deltas=None):
+    # Any active limit is a machine stop. Do not filter by travel direction:
+    # the sensor may be protecting a different axis or the direction wiring
+    # may not match the configured coordinate sign.
+    limit_name = active_limit_name()
+    if limit_name is not None:
+        raise LimitTriggered(limit_name)
 
 
 def parse_line(raw_line):
@@ -297,11 +317,56 @@ def enable_all_axes():
         set_axis_enabled(axis, True)
 
 
-def stop_axes():
+def stop_axes(disable_all=False):
     set_all_steps(0)
     set_axis_enabled("X", False)
     set_axis_enabled("Y", False)
-    set_axis_enabled("Z", KEEP_Z_ENABLED)
+    set_axis_enabled("Z", False if disable_all else KEEP_Z_ENABLED)
+
+
+def limit_irq_handler(pin):
+    # The IRQ removes STEP levels and disables every axis before the async job
+    # gets scheduled. The main loop then raises LimitTriggered with the name.
+    global STOP_REQUESTED, PAUSE_REQUESTED, LIMIT_STOP_REQUESTED, LIMIT_STOP_NAME
+    STOP_REQUESTED = True
+    PAUSE_REQUESTED = False
+    LIMIT_STOP_REQUESTED = True
+    if pin is x_minus_limit:
+        LIMIT_STOP_NAME = "X-"
+    elif pin is x_plus_limit:
+        LIMIT_STOP_NAME = "X+"
+    elif pin is y_left_minus_limit:
+        LIMIT_STOP_NAME = "Y-left-"
+    elif pin is y_left_plus_limit:
+        LIMIT_STOP_NAME = "Y-left+"
+    elif pin is y_right_minus_limit:
+        LIMIT_STOP_NAME = "Y-right-"
+    elif pin is y_right_plus_limit:
+        LIMIT_STOP_NAME = "Y-right+"
+    elif pin is z_minus_limit:
+        LIMIT_STOP_NAME = "Z-"
+    elif pin is z_plus_limit:
+        LIMIT_STOP_NAME = "Z+"
+    x_step.value(0)
+    yl_step.value(0)
+    yr_step.value(0)
+    z_step.value(0)
+    x_ena.value(ENA_OFF)
+    yl_ena.value(ENA_OFF)
+    yr_ena.value(ENA_OFF)
+    z_ena.value(ENA_OFF)
+
+
+def configure_limit_irqs():
+    try:
+        for pin in LIMIT_INPUTS.values():
+            pin.irq(trigger=Pin.IRQ_RISING, handler=limit_irq_handler)
+    except Exception:
+        # Polling remains active on ports without GPIO IRQ support.
+        pass
+
+
+configure_limit_irqs()
 
 
 def calculate_delay_us(distance_mm, max_steps, feed_mm_min):
@@ -390,7 +455,11 @@ async def move_linear(target_mm, feed_mm_min, preview=False, ramp=True):
     try:
         for pulse_index in range(max_steps):
             if pulse_index % LIMIT_CHECK_INTERVAL == 0:
-                check_motion_limits(deltas)
+                limit_name = active_limit_name()
+                if limit_name is not None:
+                    # Exception construction needs the allocator enabled.
+                    gc.enable()
+                    raise LimitTriggered(limit_name)
             if pulse_index % CONTROL_CHECK_INTERVAL == 0:
                 if STOP_REQUESTED or PAUSE_REQUESTED:
                     gc.enable()

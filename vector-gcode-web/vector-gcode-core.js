@@ -869,6 +869,34 @@ function formatNumber(value, decimals = 3) {
   return number(value).toFixed(decimals).replace(/0+$/, '').replace(/\.$/, '') || '0';
 }
 
+function distanceSquared(first, second) {
+  const deltaX = first.x - second.x;
+  const deltaY = first.y - second.y;
+  return deltaX * deltaX + deltaY * deltaY;
+}
+
+function orientPathForOutput(pathValue, currentPoint) {
+  let points = pathValue.points.map(value => point(value.x, value.y));
+  const closed = Boolean(pathValue.closed) || samePoint(points[0], points.at(-1));
+  if (closed && points.length > 1 && samePoint(points[0], points.at(-1))) points = points.slice(0, -1);
+  if (closed && points.length > 1) {
+    let nearestIndex = 0;
+    let nearestDistance = distanceSquared(points[0], currentPoint);
+    for (let index = 1; index < points.length; index += 1) {
+      const currentDistance = distanceSquared(points[index], currentPoint);
+      if (currentDistance < nearestDistance) {
+        nearestIndex = index;
+        nearestDistance = currentDistance;
+      }
+    }
+    points = points.slice(nearestIndex).concat(points.slice(0, nearestIndex));
+    points.push(points[0]);
+  } else if (points.length > 1 && distanceSquared(points.at(-1), currentPoint) < distanceSquared(points[0], currentPoint)) {
+    points.reverse();
+  }
+  return { ...pathValue, points, closed };
+}
+
 function generateGcode(items, options = {}) {
   const safeZ = number(options.safeZ, 5);
   const cutZ = number(options.cutZ, -1);
@@ -877,6 +905,7 @@ function generateGcode(items, options = {}) {
   const decimals = Math.max(0, Math.floor(number(options.decimals, 3)));
   const lines = ['; Vector G-code', '; Units: millimeters', '; No spindle or laser commands', 'G21', 'G90', 'G17', 'G94', `G0 Z${formatNumber(safeZ, decimals)}`];
   let pathCount = 0;
+  let currentPoint = point(0, 0);
   let currentSheet = null;
   for (const item of items) {
     const sheetIndex = item.transform?.sheetIndex ?? item.sheetIndex ?? 0;
@@ -884,20 +913,27 @@ function generateGcode(items, options = {}) {
       lines.push(`; Sheet ${sheetIndex + 1}`);
       currentSheet = sheetIndex;
     }
-    for (const pathValue of transformPaths(item.paths, item.transform || {})) {
+    const connectedPaths = joinConnectedPaths(transformPaths(item.paths, item.transform || {}));
+    for (const rawPath of connectedPaths) {
+      const pathValue = orientPathForOutput(rawPath, currentPoint);
       if (pathValue.points.length < 2) continue;
-      const points = pathValue.closed && !samePoint(pathValue.points[0], pathValue.points.at(-1)) ? [...pathValue.points, pathValue.points[0]] : pathValue.points;
+      const points = pathValue.points;
       const first = points[0];
-      lines.push(`G0 X${formatNumber(first.x, decimals)} Y${formatNumber(first.y, decimals)}`);
+      if (!samePoint(first, currentPoint)) {
+        lines.push(`G0 X${formatNumber(first.x, decimals)} Y${formatNumber(first.y, decimals)}`);
+      }
       lines.push(`G1 Z${formatNumber(cutZ, decimals)} F${formatNumber(plungeFeed, 0)}`);
       for (let index = 1; index < points.length; index += 1) {
         lines.push(`G1 X${formatNumber(points[index].x, decimals)} Y${formatNumber(points[index].y, decimals)} F${formatNumber(cutFeed, 0)}`);
       }
       lines.push(`G0 Z${formatNumber(safeZ, decimals)}`);
+      currentPoint = point(points.at(-1).x, points.at(-1).y);
       pathCount += 1;
     }
   }
-  lines.push(`G0 Z${formatNumber(safeZ, decimals)}`, 'M2');
+  const finalSafeLine = `G0 Z${formatNumber(safeZ, decimals)}`;
+  if (lines.at(-1) !== finalSafeLine) lines.push(finalSafeLine);
+  lines.push('M2');
   return { code: lines.join('\n') + '\n', pathCount };
 }
 
