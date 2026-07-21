@@ -178,16 +178,25 @@ def get_limit_status():
 
 
 def check_motion_limits(deltas):
-    directions = (
-        ("X", deltas["X"], "X-", "X+"),
-        ("Y", deltas["Y"], "Y-", "Y+"),
-        ("Z", deltas["Z"], "Z-", "Z+"),
-    )
-    for axis, delta, negative_limit, positive_limit in directions:
-        if delta < 0 and any(is_limit_active(pin) for pin in LIMIT_PINS[negative_limit]):
-            raise LimitTriggered(negative_limit)
-        if delta > 0 and any(is_limit_active(pin) for pin in LIMIT_PINS[positive_limit]):
-            raise LimitTriggered(positive_limit)
+    # This function runs while the pulse loop has GC disabled. Avoid tuples,
+    # generators, and dictionary construction here or long moves can exhaust
+    # the MicroPython heap with unreachable temporary objects.
+    if deltas["X"] < 0 and is_limit_active(x_minus_limit):
+        raise LimitTriggered("X-")
+    if deltas["X"] > 0 and is_limit_active(x_plus_limit):
+        raise LimitTriggered("X+")
+
+    if deltas["Y"] < 0:
+        if is_limit_active(y_left_minus_limit) or is_limit_active(y_right_minus_limit):
+            raise LimitTriggered("Y-")
+    if deltas["Y"] > 0:
+        if is_limit_active(y_left_plus_limit) or is_limit_active(y_right_plus_limit):
+            raise LimitTriggered("Y+")
+
+    if deltas["Z"] < 0 and is_limit_active(z_minus_limit):
+        raise LimitTriggered("Z-")
+    if deltas["Z"] > 0 and is_limit_active(z_plus_limit):
+        raise LimitTriggered("Z+")
 
 
 def parse_line(raw_line):
