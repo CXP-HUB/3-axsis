@@ -127,6 +127,7 @@ def status_payload():
             int(upload_received * 100 / job_size) if job_size else 0
         ),
         "error": last_error,
+        "limits": gcode_controller.get_limit_status() if gcode_controller is not None else {},
     }
 
 
@@ -224,6 +225,9 @@ async def run_job():
                         return
                 await asyncio.sleep_ms(0)
         job_state = "completed"
+    except gcode_controller.LimitTriggered as error:
+        job_state = "limit"
+        last_error = str(error)
     except gcode_controller.MotionStopped:
         job_state = "stopped"
     except Exception as error:

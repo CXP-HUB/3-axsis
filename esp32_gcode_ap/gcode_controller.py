@@ -30,11 +30,18 @@ START_DELAY_US = 3000
 # accelerating. Increase it only after the motor starts cleanly.
 ACCEL_PULSES = 800
 CONTROL_CHECK_INTERVAL = 128
+# Limit inputs are checked often enough to stop before significant travel while
+# keeping the software pulse loop reasonably stable on MicroPython.
+LIMIT_CHECK_INTERVAL = 4
 # A non-zero value makes HTTP control more responsive, but each yield can
 # disturb the pulse train. Leave it at zero for the smoothest motion.
 PULSE_YIELD_INTERVAL = 0
 STEP_HIGH_US = 10
 ARC_SEGMENT_MM = 0.5
+
+# SN04-N is an NPN sensor. The optocoupler board is expected to pull its
+# ESP32-side output low when a limit is active.
+LIMIT_ACTIVE_LEVEL = 0
 
 X_STEP_MASK = 1
 Y_STEP_MASK = 2
@@ -56,6 +63,15 @@ z_step = Pin(13, Pin.OUT, value=0)
 z_dir = Pin(14, Pin.OUT, value=0)
 z_ena = Pin(15, Pin.OUT, value=ENA_OFF)
 
+x_minus_limit = Pin(16, Pin.IN, Pin.PULL_UP)
+x_plus_limit = Pin(17, Pin.IN, Pin.PULL_UP)
+y_left_minus_limit = Pin(18, Pin.IN, Pin.PULL_UP)
+y_left_plus_limit = Pin(21, Pin.IN, Pin.PULL_UP)
+y_right_minus_limit = Pin(38, Pin.IN, Pin.PULL_UP)
+y_right_plus_limit = Pin(39, Pin.IN, Pin.PULL_UP)
+z_minus_limit = Pin(40, Pin.IN, Pin.PULL_UP)
+z_plus_limit = Pin(41, Pin.IN, Pin.PULL_UP)
+
 STEP_PINS = {
     "X": (x_step,),
     "Y": (yl_step, yr_step),
@@ -74,6 +90,27 @@ ENA_PINS = {
     "Z": (z_ena,),
 }
 
+LIMIT_INPUTS = {
+    "X-": x_minus_limit,
+    "X+": x_plus_limit,
+    "Y-left-": y_left_minus_limit,
+    "Y-left+": y_left_plus_limit,
+    "Y-right-": y_right_minus_limit,
+    "Y-right+": y_right_plus_limit,
+    "Z-": z_minus_limit,
+    "Z+": z_plus_limit,
+}
+
+# Group the two Y sensors on each side for directional motion protection.
+LIMIT_PINS = {
+    "X-": (x_minus_limit,),
+    "X+": (x_plus_limit,),
+    "Y-": (y_left_minus_limit, y_right_minus_limit),
+    "Y+": (y_left_plus_limit, y_right_plus_limit),
+    "Z-": (z_minus_limit,),
+    "Z+": (z_plus_limit,),
+}
+
 POSITION_MM = {
     "X": 0.0,
     "Y": 0.0,
@@ -90,6 +127,12 @@ PAUSE_REQUESTED = False
 
 class MotionStopped(Exception):
     pass
+
+
+class LimitTriggered(MotionStopped):
+    def __init__(self, limit_name):
+        self.limit_name = limit_name
+        super().__init__("limit_triggered_{}".format(limit_name))
 
 
 def clear_motion_requests():
@@ -116,12 +159,34 @@ def request_resume():
 
 
 async def wait_for_motion_control():
-    if STOP_REQUESTED:
-        raise MotionStopped()
     while PAUSE_REQUESTED and not STOP_REQUESTED:
         await asyncio.sleep_ms(50)
     if STOP_REQUESTED:
         raise MotionStopped()
+
+
+def is_limit_active(pin):
+    return pin.value() == LIMIT_ACTIVE_LEVEL
+
+
+def get_limit_status():
+    return {
+        name: is_limit_active(pin)
+        for name, pin in LIMIT_INPUTS.items()
+    }
+
+
+def check_motion_limits(deltas):
+    directions = (
+        ("X", deltas["X"], "X-", "X+"),
+        ("Y", deltas["Y"], "Y-", "Y+"),
+        ("Z", deltas["Z"], "Z-", "Z+"),
+    )
+    for axis, delta, negative_limit, positive_limit in directions:
+        if delta < 0 and any(is_limit_active(pin) for pin in LIMIT_PINS[negative_limit]):
+            raise LimitTriggered(negative_limit)
+        if delta > 0 and any(is_limit_active(pin) for pin in LIMIT_PINS[positive_limit]):
+            raise LimitTriggered(positive_limit)
 
 
 def parse_line(raw_line):
@@ -291,6 +356,7 @@ async def move_linear(target_mm, feed_mm_min, preview=False, ramp=True):
         POSITION_MM.update(target_mm)
         return
 
+    check_motion_limits(deltas)
     set_directions(deltas)
     target_delay_us = calculate_delay_us(distance_mm, max_steps, feed_mm_min)
     start_delay_us = max(START_DELAY_US, target_delay_us)
@@ -313,6 +379,8 @@ async def move_linear(target_mm, feed_mm_min, preview=False, ramp=True):
     gc.disable()
     try:
         for pulse_index in range(max_steps):
+            if pulse_index % LIMIT_CHECK_INTERVAL == 0:
+                check_motion_limits(deltas)
             if pulse_index % CONTROL_CHECK_INTERVAL == 0:
                 if STOP_REQUESTED or PAUSE_REQUESTED:
                     gc.enable()
